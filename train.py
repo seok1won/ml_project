@@ -9,15 +9,19 @@ import random
 import numpy as np
 import os
 
-# Import both resnet and plainnet models
-from model import resnet_cifar, plainnet_cifar, relubn_resnet_cifar, nobn_resnet_cifar, norelu_resnet_cifar
+# Import models
+from model import (resnet_cifar, plainnet_cifar, 
+                   resnet_with_dropout_cifar, resnet34, resnet50)
 
 parser = argparse.ArgumentParser(description='Training for ResNet/PlainNet to compare')
 # Arguments for experiment setup
 parser.add_argument('--model', default='resnet', type=str, 
-                    choices=['resnet', 'plainnet', 'relubn_resnet', 'nobn_resnet', 'norelu_resnet'],
-                    help='model type (resnet, plainnet, relubn_resnet, nobn_resnet, or norelu_resnet)')
+                    choices=['resnet', 'plainnet', 
+                             'resnet_dropout', 'resnet34', 'resnet50'],
+                    help='model type')
 parser.add_argument('--n_size', default=3, type=int, help="N size for network (6n+2 layers)")
+parser.add_argument('--dropout_p', default=0.5, type=float, help="Dropout probability for ResNetWithDropout")
+parser.add_argument('--shortcut', default='B', type=str, choices=['A', 'B'], help='ResNet shortcut type (A=padding, B=convolution)')
 # General training arguments
 parser.add_argument('--epochs', default=164, type=int, help='number of epochs to train')
 parser.add_argument('--batch_size', default=128, type=int, help='batch size')
@@ -49,7 +53,15 @@ start_epoch = 0
 log_dir = args.log_path
 if not os.path.isdir(log_dir):
     os.makedirs(log_dir)
-log_filename = 'logs/log_{}_n{}.csv'.format(args.model, args.n_size)
+
+# Define log and checkpoint filenames based on model type
+if args.model in ['resnet34', 'resnet50']:
+    log_filename = f'logs/log_{args.model}_{args.shortcut}.csv'
+    ckpt_filename = f'ckpt_{args.model}_{args.shortcut}.pth'
+else:
+    log_filename = f'logs/log_{args.model}_n{args.n_size}_{args.shortcut}.csv'
+    ckpt_filename = f'ckpt_{args.model}_n{args.n_size}_{args.shortcut}.pth'
+
 # Check if we are resuming, if not, create a new log file
 if not args.resume or not os.path.exists(log_filename):
     with open(log_filename, 'w') as f:
@@ -76,20 +88,20 @@ testloader = torch.utils.data.DataLoader(testset,batch_size=100, shuffle=False,n
 
 print('...Building model...')
 if args.model == 'resnet':
-    net = resnet_cifar(n=args.n_size)
-    print("Training ResNet with n=", args.n_size)
+    net = resnet_cifar(n=args.n_size, shortcut_type=args.shortcut)
+    print(f"Training ResNet-{args.n_size*8+2} with shortcut {args.shortcut}")
 elif args.model == 'plainnet':
-    net = plainnet_cifar(n=args.n_size)
-    print("Training PlainNet with n=", args.n_size)
-elif args.model == 'relubn_resnet':
-    net = relubn_resnet_cifar(n=args.n_size)
-    print("Training ReluBn-ResNet with n=", args.n_size)
-elif args.model == 'nobn_resnet':
-    net = nobn_resnet_cifar(n=args.n_size)
-    print("Training NoBn-ResNet with n=", args.n_size)
-elif args.model == 'norelu_resnet':
-    net = norelu_resnet_cifar(n=args.n_size)
-    print("Training NoReLu-ResNet with n=", args.n_size)
+    net = plainnet_cifar(n=args.n_size, shortcut_type=args.shortcut)
+    print(f"Training PlainNet-{args.n_size*8+2}")
+elif args.model == 'resnet_dropout':
+    net = resnet_with_dropout_cifar(n=args.n_size, dropout_p=args.dropout_p, shortcut_type=args.shortcut)
+    print(f"Training ResNet-Dropout-{args.n_size*8+2} (p={args.dropout_p}) with shortcut {args.shortcut}")
+elif args.model == 'resnet34':
+    net = resnet34(shortcut_type=args.shortcut)
+    print(f"Training ResNet-34 with shortcut {args.shortcut}")
+elif args.model == 'resnet50':
+    net = resnet50(shortcut_type=args.shortcut)
+    print(f"Training ResNet-50 with shortcut {args.shortcut}")
 else:
     raise ValueError("Model type not supported.")
 
@@ -99,10 +111,6 @@ net = net.to(device)
 if device == 'cuda':
     net = torch.nn.DataParallel(net)
     cudnn.benchmark =True
-
-# Define checkpoint filename based on model and n_size
-
-ckpt_filename = f'ckpt_{args.model}_n{args.n_size}.pth'
 
 if args.resume:
     print('...Resuming from checkpoint...')

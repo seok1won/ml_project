@@ -1,80 +1,131 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision
-import torchvision.transforms as transforms
+
+class LambdaLayer(nn.Module):
+    def __init__(self, lambd):
+        super(LambdaLayer, self).__init__()
+        self.lambd = lambd
+
+    def forward(self, x):
+        return self.lambd(x)
+
 
 class ResidualBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1):
+    expansion = 1
+
+    def __init__(self, in_planes, planes, stride=1, shortcut_type='B'):
         super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
 
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion*planes:
+            if shortcut_type == 'A':
+                # Option A: Parameter-free padding
+                self.shortcut = LambdaLayer(lambda x: 
+                                            F.pad(x if stride == 1 else x[:, :, ::2, ::2], 
+                                                  (0, 0, 0, 0, (self.expansion*planes - in_planes)//2, (self.expansion*planes - in_planes)//2), 
+                                                  "constant", 0))
+            elif shortcut_type == 'B':
+                # Option B: 1x1 convolution
+                self.shortcut = nn.Sequential(
+                    nn.Conv2d(in_planes, self.expansion*planes, kernel_size=1, stride=stride, bias=False),
+                    nn.BatchNorm2d(self.expansion*planes)
+                )
 
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-
-        if stride != 1 or in_channels != out_channels:
-            self.shortcut = lambda x: F.pad(x[:, :, ::2, ::2],
-                                              (0, 0, 0, 0, (out_channels-in_channels)//2, (out_channels-in_channels)//2),
-                                              "constant", 0)
-        else:
-            self.shortcut = lambda x: x
-
-        # option B
-        # if stride !=1 or in_channels != out_channels:
-        #     self.shortcut = nn.Sequential(
-        #         nn.Conv2d(in_channels,out_channels,kernel_size=1, stride=stride,bias=False),
-        #         nn.BatchNorm2d(out_channels)
-        #     )
-
-    def forward(self,x):
+    def forward(self, x):
         out = F.relu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
         out += self.shortcut(x)
         out = F.relu(out)
         return out
 
+
+class Bottleneck(nn.Module):
+    expansion = 4
+
+    def __init__(self, in_planes, planes, stride=1, shortcut_type='B'):
+        super(Bottleneck, self).__init__()
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.conv3 = nn.Conv2d(planes, self.expansion*planes, kernel_size=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(self.expansion*planes)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion*planes:
+            if shortcut_type == 'A':
+                 # Option A: Parameter-free padding
+                self.shortcut = LambdaLayer(lambda x: 
+                                            F.pad(x if stride == 1 else x[:, :, ::2, ::2], 
+                                                  (0, 0, 0, 0, (self.expansion*planes - in_planes)//2, (self.expansion*planes - in_planes)//2), 
+                                                  "constant", 0))
+            elif shortcut_type == 'B':
+                # Option B: 1x1 convolution
+                self.shortcut = nn.Sequential(
+                    nn.Conv2d(in_planes, self.expansion*planes, kernel_size=1, stride=stride, bias=False),
+                    nn.BatchNorm2d(self.expansion*planes)
+                )
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = F.relu(self.bn2(self.conv2(out)))
+        out = self.bn3(self.conv3(out))
+        out += self.shortcut(x)
+        out = F.relu(out)
+        return out
+
+
 class ResNet(nn.Module):
+    def __init__(self, block, num_blocks, shortcut_type='B', num_classes=10):
+        super(ResNet, self).__init__()
+        self.in_planes = 64
+        self.shortcut_type = shortcut_type
 
-    def __init__(self,block,num_blocks,num_classes=10):
-        super(ResNet,self).__init__()
-        self.in_channels = 16
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
+        self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
+        self.linear = nn.Linear(512*block.expansion, num_classes)
 
-        self.conv1 = nn.Conv2d(3,16, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(16)
-
-        self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
-        self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
-        self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
-
-        self.linear = nn.Linear(64, num_classes)
-
-    def _make_layer(self,block,out_channels,num_blocks,stride):
+    def _make_layer(self, block, planes, num_blocks, stride):
         strides = [stride] + [1]*(num_blocks-1)
-        layers =[]
-        for s in strides:
-            layers.append(block(self.in_channels, out_channels, s))
-            self.in_channels = out_channels
+        layers = []
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, stride, self.shortcut_type))
+            self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
-    
-    def forward(self,x):
+
+    def forward(self, x):
         out = F.relu(self.bn1(self.conv1(x)))
         out = self.layer1(out)
         out = self.layer2(out)
         out = self.layer3(out)
-
-        out = F.avg_pool2d(out,out.size()[3])
-        out = out.view(out.size(0),-1)
+        out = self.layer4(out)
+        out = F.avg_pool2d(out, 4)
+        out = out.view(out.size(0), -1)
         out = self.linear(out)
-
         return out
-    
-def resnet_cifar(n):
-    return ResNet(ResidualBlock, [n,n,n])
+
+def resnet_cifar(n, **kwargs):
+    return ResNet(ResidualBlock, [n,n,n,n], **kwargs)
+
+def resnet34(**kwargs):
+    return ResNet(ResidualBlock, [3,4,6,3], **kwargs)
+
+def resnet50(**kwargs):
+    return ResNet(Bottleneck, [3,4,6,3], **kwargs)
+
 
 class PlainBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1):
+    expansion = 1
+    def __init__(self, in_channels, out_channels, stride=1, shortcut_type='B'): # shortcut_type is ignored
         super(PlainBlock, self).__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(out_channels)
@@ -87,97 +138,27 @@ class PlainBlock(nn.Module):
         out = F.relu(out)
         return out
 
-def plainnet_cifar(n):
-    return ResNet(PlainBlock, [n,n,n])
+def plainnet_cifar(n, **kwargs):
+    return ResNet(PlainBlock, [n,n,n,n], **kwargs)
 
-if __name__ == '__main__':
-    print("--- ResNet ---")
-    net = resnet_cifar(n=3)
-    # print(net)
-    x = torch.randn(2,3,32,32)
-    y = net(x)
-    print(f'ResNet-20 output size: {y.size()}')
-
-    print("\n--- PlainNet ---")
-    net = plainnet_cifar(n=3)
-    # print(net)
-    x = torch.randn(2,3,32,32)
-    y = net(x)
-    print(f'PlainNet-20 output size: {y.size()}')
-
-class ReluBnBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1):
-        super(ReluBnBlock, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-
-        if stride != 1 or in_channels != out_channels:
-            self.shortcut = lambda x: F.pad(x[:, :, ::2, ::2],
-                                              (0, 0, 0, 0, (out_channels-in_channels)//2, (out_channels-in_channels)//2),
-                                              "constant", 0)
-        else:
-            self.shortcut = lambda x: x
+class ResNetWithDropout(ResNet):
+    def __init__(self, block, num_blocks, shortcut_type='B', dropout_p=0.5, num_classes=10):
+        super(ResNetWithDropout, self).__init__(block, num_blocks, shortcut_type, num_classes)
+        self.dropout = nn.Dropout(p=dropout_p)
 
     def forward(self, x):
-        # Swapped order: Conv -> ReLU -> BN
-        out = self.bn1(F.relu(self.conv1(x)))
-        out = self.bn2(F.relu(self.conv2(out)))
-        out += self.shortcut(x)
-        out = F.relu(out)
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
+        out = F.avg_pool2d(out, 4)
+        out = out.view(out.size(0), -1)
+        out = self.dropout(out)
+        out = self.linear(out)
         return out
 
-class NoBnBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1):
-        super(NoBnBlock, self).__init__()
-        # Use bias=True since we are not using BatchNorm
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=True)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=True)
+def resnet_with_dropout_cifar(n, dropout_p=0.5, **kwargs):
+    return ResNetWithDropout(ResidualBlock, [n,n,n,n], dropout_p=dropout_p, **kwargs)
 
-        if stride != 1 or in_channels != out_channels:
-            self.shortcut = lambda x: F.pad(x[:, :, ::2, ::2],
-                                              (0, 0, 0, 0, (out_channels-in_channels)//2, (out_channels-in_channels)//2),
-                                              "constant", 0)
-        else:
-            self.shortcut = lambda x: x
-
-    def forward(self, x):
-        out = F.relu(self.conv1(x))
-        out = self.conv2(out)
-        out += self.shortcut(x)
-        out = F.relu(out)
-        return out
-
-def relubn_resnet_cifar(n):
-    return ResNet(ReluBnBlock, [n,n,n])
-
-def nobn_resnet_cifar(n):
-    return ResNet(NoBnBlock, [n,n,n])
-
-
-class NoReluBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1):
-        super(NoReluBlock, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-
-        if stride != 1 or in_channels != out_channels:
-            self.shortcut = lambda x: F.pad(x[:, :, ::2, ::2],
-                                              (0, 0, 0, 0, (out_channels-in_channels)//2, (out_channels-in_channels)//2),
-                                              "constant", 0)
-        else:
-            self.shortcut = lambda x: x
-
-    def forward(self, x):
-        # Forward pass without ReLU activations
-        out = self.bn1(self.conv1(x))
-        out = self.bn2(self.conv2(out))
-        out += self.shortcut(x)
-        return out
-
-def norelu_resnet_cifar(n):
-    return ResNet(NoReluBlock, [n,n,n])
-
+# (Other blocks like ReluBnBlock, NoBnBlock, NoReluBlock can be updated similarly if needed)
